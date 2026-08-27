@@ -144,8 +144,8 @@ def main() -> int:
     if args.cmd == "serve":
         import uvicorn
         from .config import settings
-        host = args.host or settings.get("server.host", "127.0.0.1")
-        port = args.port or int(settings.get("server.port", 8399))
+        host = args.host or settings().get("server.host", "127.0.0.1")
+        port = args.port or int(settings().get("server.port", 8399))
         uvicorn.run("nightfall.main:app", host=host, port=port)
         return 0
 
