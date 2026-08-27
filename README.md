@@ -259,6 +259,4 @@ TUI crashed on `Solo Leveling` (post `1000004883`) due to `DuplicateID: anime_sr
 
 ---
 
-## License
-
 Private use only. Upstream APIs belong to their respective services.
