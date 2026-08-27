@@ -32,6 +32,38 @@ def _set_config_line(path, key_pattern: str, new_line: str) -> bool:
     return False
 
 
+def _print_serve_guide(host: str, port: int, compact: bool = False) -> None:
+    """Serve setup guide — like ./run.sh guide but focused on `serve`."""
+    from .banner import c, dim
+    print(c("╭──────────────────────────────────────────────────╮", "35"))
+    print(c("│  🌙  NIGHTFALL · Serve Setup Guide               │", "35"))
+    print(c("╰──────────────────────────────────────────────────╯", "35"))
+    print(f"  Host {host}:{port}  (config.yaml: server.host/port, env: NIGHTFALL_SERVER__PORT)")
+    print()
+    steps = [
+        ("1. Port free?", f"lsof -i :{port}  # if 8399 in use: ./run.sh down  or  ./run.sh serve --port {port+1}"),
+        ("2. Firewall (LAN)", f"sudo ufw allow {port}/tcp  # else phone can't reach"),
+        ("3. LAN IP", f"ip route get 1.1.1.1 | awk '{{print $7}}'  # → http://<LAN_IP>:{port}/docs"),
+        ("4. API key", "./run.sh key create phone  # header X-API-Key: $KEY  (auto if ./run.sh setup)"),
+        ("5. Start", f"./run.sh serve  # this — or  ./run.sh up  (daemon)"),
+        ("6. Verify", f"curl http://127.0.0.1:{port}/health | jq  # {{ok:true, cache, fingerprint}}"),
+        ("7. Docs", f"http://127.0.0.1:{port}/docs  (Swagger, try /search, /titles/{{id}}/stream)"),
+        ("8. If 98 (in use)", f"./run.sh status; ./run.sh down; lsof -i :{port}"),
+    ]
+    for title, cmd in steps:
+        if compact and title.startswith(("7.", "8.")):
+            continue
+        print(f"  {c(title, '36')}  {dim(cmd)}" if not compact else f"  {title} {cmd}")
+    if not compact:
+        print()
+        print(dim("  Tip: ./run.sh serve --quick  # skip this guide"))
+        print(dim("       ./run.sh serve --guide  # only guide, don't start"))
+        print(dim("       ./run.sh guide            # whole project use-cases (caching, fingerprint)"))
+    else:
+        print(dim("  --guide for full steps, --quick to hide"))
+    print()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="nightfall",
@@ -42,8 +74,10 @@ def main() -> int:
     sub.add_parser("setup", help="first-run wizard: env check, server, API key")
     sub.add_parser("tui", help="interactive terminal app")
 
-    p_serve = sub.add_parser("serve", help="run gateway in foreground")
+    p_serve = sub.add_parser("serve", help="run gateway in foreground (use --guide for setup steps)")
     p_serve.add_argument("--host"); p_serve.add_argument("--port", type=int)
+    p_serve.add_argument("--guide", action="store_true", help="show serve setup guide and exit")
+    p_serve.add_argument("--quick", action="store_true", help="skip guide, start immediately")
     sub.add_parser("up", help="start gateway as background daemon")
     sub.add_parser("down", help="stop daemon")
     sub.add_parser("status", help="gateway + protocol state")
@@ -80,7 +114,7 @@ def main() -> int:
 
     args = ap.parse_args()
 
-    from .banner import banner, ok, info, fail
+    from .banner import banner, ok, info, fail, warn
     banner()
 
     # ---- no args: auto mode (ensure gateway -> interactive app) ------------
@@ -143,9 +177,27 @@ def main() -> int:
 
     if args.cmd == "serve":
         import uvicorn
-        from .config import settings
-        host = args.host or settings().get("server.host", "127.0.0.1")
-        port = args.port or int(settings().get("server.port", 8399))
+        from .config import settings as _cfg
+        host = args.host or _cfg().get("server.host", "0.0.0.0")
+        port = args.port or int(_cfg().get("server.port", 8399))
+        # --guide: show setup steps without starting (like ./run.sh guide but serve-focused)
+        if args.guide:
+            _print_serve_guide(host, port)
+            return 0
+        # default: show compact serve setup guide (like guide) then start — skip with --quick
+        if not args.quick:
+            _print_serve_guide(host, port, compact=True)
+        # pre-flight: if port already bound, show helpful remediation (as seen in 8399 already-in-use)
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            if s.connect_ex(("127.0.0.1", int(port))) == 0:
+                warn(f"port {port} already in use (daemon `up` running?). Try:")
+                print(f"    ./run.sh status          # check daemon")
+                print(f"    ./run.sh down            # free {port}")
+                print(f"    ./run.sh serve --port {int(port)+1}  # or alternate port")
+                print(f"    lsof -i :{port}           # who holds it")
+                # still try to start — uvicorn will error gracefully as before
         uvicorn.run("nightfall.main:app", host=host, port=port)
         return 0
 

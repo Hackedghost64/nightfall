@@ -35,7 +35,9 @@ Or foreground:
 | `./run.sh play "breaking bad" 5x1` | One-shot MovieBox: search → stream in mpv/vlc/ffplay |
 | `./run.sh dl "peaky blinders" 6x1` | One-shot MovieBox download |
 | `./run.sh up / down / status` | Daemon lifecycle (pidfile `data/nightfall.pid`, health probe) |
-| `./run.sh serve` | Foreground gateway |
+| `./run.sh serve` | Foreground gateway **+ setup guide** (prints 8-step `Serve Setup Guide`, `--quick` to skip, `--guide` to show only guide) |
+| `./run.sh serve --guide` | Serve setup guide only (port/firewall/LAN IP/key/verify/docs) (`cli.py:41` `_print_serve_guide`) |
+| `./run.sh serve --quick` | Serve without guide (direct `uvicorn`) |
 | `./run.sh mode links\|proxy` | Toggle media delivery (per-request `?mode=proxy` still works) |
 | `./run.sh secure on\|off\|auto` | Toggle API-key enforcement |
 | `./run.sh key create/list/revoke` | Manage `X-API-Key` clients |
