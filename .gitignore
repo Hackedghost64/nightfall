@@ -1,0 +1,17 @@
+downloads/
+logs/
+data/device.json
+data/api.key
+data/api_keys.json
+data/nightfall.pid
+data/cli.key
+data/history.json
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.idea/
+.DS_Store
+protocol/backups/
+watch/*.apk
+.env

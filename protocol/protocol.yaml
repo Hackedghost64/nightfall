@@ -1,0 +1,107 @@
+version: 2
+updated: '2026-08-26T15:43:15+05:30'
+source_apk: moviebox-v-3.0.14(1).apk
+app:
+  package: com.community.oneroom
+  version_name: 3.0.15.0513.03
+  version_code: 50020104
+secrets:
+  gateway_secret_online: 76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O
+  gateway_secret_test: Xqn2nnO41/L92o1iuXhSLHTbXvY4Z5ZZ62m8mSLA
+  google_api_key: AIzaSyDoUlg4QWx_EYkLV9IoIzaRvysnE_7G_EQ
+hosts:
+  primary: api6.aoneroom.com
+  fallbacks:
+  - i-api.aoneroom.com
+signature:
+  profile: hmac_md5_v2
+  header_name: x-tr-signature
+  format: '{timestamp}|{version}|{digest}'
+  version_tag: '2'
+  canonical_fields:
+  - method
+  - accept
+  - content_type
+  - content_length
+  - timestamp
+  - body_md5
+  - path_query
+  body_md5_limit: 102400
+  secret_field: gateway_secret_online
+  secret_is_base64: true
+  time_skew_error_code: GW.4410
+identity_headers:
+  client_token:
+  - x-client-token
+  - token
+  client_info: X-Client-Info
+  client_status: X-Client-Status
+response:
+  ok_codes:
+  - '0'
+  - '200'
+  - SUCCESS
+  envelope_keys:
+    code: code
+    message: message
+    data: data
+auth_failure_signals:
+  http_statuses:
+  - 401
+  - 403
+  body_codes_prefix: GW.
+media:
+  host_suffixes:
+  - aoneroom.com
+  - aliyuncs.com
+  - akamaized.net
+  - cloudcdn.net
+  - hakunaymatata.com
+endpoints:
+  # needs_host_param: upstream requires ?host=<api-host> for service routing
+  search_v2:
+    method: POST
+    path: /wefeed-mobile-bff/subject-api/search/v2
+    needs_host_param: true
+  search_suggest:
+    method: GET
+    path: /wefeed-mobile-bff/subject-api/search-suggest
+  search_rank:
+    method: GET
+    path: /wefeed-mobile-bff/subject-api/search-rank/v2
+  subject_get:
+    method: GET
+    path: /wefeed-mobile-bff/subject-api/get
+    needs_host_param: true
+  season_info:
+    method: GET
+    path: /wefeed-mobile-bff/subject-api/season-info
+    needs_host_param: true
+  play_info:
+    method: GET
+    path: /wefeed-mobile-bff/subject-api/play-info
+    needs_host_param: true
+  resource:
+    method: GET
+    path: /wefeed-mobile-bff/subject-api/resource
+    needs_host_param: true
+  resource_position:
+    method: GET
+    path: /wefeed-mobile-bff/subject-api/resource-position
+    needs_host_param: true
+  ext_captions:
+    method: GET
+    path: /wefeed-mobile-bff/subject-api/get-ext-captions
+    needs_host_param: true
+  tab_operating:
+    method: GET
+    path: /wefeed-mobile-bff/tab-operating
+
+# Leave empty: the client auto-harvests the anonymous JWT from the X-User
+# response header (server-side auto-registration) and sends Authorization
+# thereafter. Set a logged-in account token here only for profile context.
+session_token: ""
+session_token_explicit_for_endpoints: [search_v2, subject_get, season_info, play_info, resource,
+  resource_position, ext_captions]
+required_manifest_keys:
+- gateway_secret_online
