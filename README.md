@@ -198,7 +198,7 @@ The **Anime** tab (Kyoto Player pipeline, `nightfall/anilab/kyoto.py:6` `M3U8_RE
 
 Stay in the **Anime** tab (`a` key or `TabPane("Anime", id="tab-anime")`, `tui.py:493`) for anime-only content to get the superior Kyoto HLS. Use `query --anime` (`cli.py:70`) for CLI.
 
-> **Cloudflare note:** Kyoto `play.anidb.app/api/anime/{id}/episodes` is Cloudflare-challenged server-side (`kyoto.py:40` adds `Referer: https://play.app/` + `X-Requested-With: PLAY`, fallback headers). Episodes/servers/stream resolve via gateway now; if you see `403 cf-mitigated: challenge` in logs, use `GET /anime/ui` in a browser (warmup iframe handles challenge) or retry with `X-API-Key` and valid `app-version` from `config.yaml` (`kyoto.app-version:126`).
+> **Cloudflare fixed:** Kyoto `play.anidb.app` is Cloudflare managed challenge (403 `cf-mitigated: challenge` with `httpx`). Gateway now uses `curl_cffi` `impersonate="chrome"` (`nightfall/anilab/kyoto.py:15` `_curl_get_json_sync`, `_curl_get_text_sync`) with `Referer: https://play.app/` + `X-Requested-With: PLAY`, bypassing CF server-side — episodes/servers/stream resolve via gateway without browser. If you still see `403` in `logs/server.log`, update `kyoto.app-version` in `config.yaml` or open `GET /anime/ui` (browser warmup iframe) as fallback.
 
 ---
 

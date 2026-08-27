@@ -81,14 +81,14 @@ async def anime_episodes(post_id: str):
         raise HTTPException(502, f"kyoto episodes failed: {e}")
 
 @router.get("/post/{post_id}/servers/{ep_id}")
-async def anime_servers(post_id: str, ep_id: str):
+async def anime_servers(post_id: str, ep_id: str):  # ep_id is numeric, no slash
     try:
         srvs = await get_kyoto().get_servers(post_id, ep_id)
         return {"ok": True, "post_id": post_id, "episode_id": ep_id, "servers": srvs, "count": len(srvs)}
     except Exception as e:
         raise HTTPException(502, f"kyoto servers failed: {e}")
 
-@router.get("/post/{post_id}/stream/{server_id}")
+@router.get("/post/{post_id}/stream/{server_id:path}")
 async def anime_stream(post_id: str, server_id: str):
     try:
         res = await get_kyoto().resolve_stream(post_id, server_id)

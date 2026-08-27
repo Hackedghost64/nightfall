@@ -1,5 +1,7 @@
-"""Kyoto Player async stream resolver — ported from anilab.html (NO Playwright)."""
+"""Kyoto Player async stream resolver — ported from anilab.html (NO Playwright).
+CF bypass via curl_cffi impersonate=chrome (play.anidb.app is Cloudflare managed challenge)."""
 from __future__ import annotations
+import asyncio
 import re
 from typing import Any, Dict, List, Optional
 import httpx
@@ -7,6 +9,55 @@ from ..config import settings
 from .cache import stream_cache, episode_cache
 
 M3U8_RE = re.compile(r"https?://[^\s\"'<>\\]+?\.m3u8[^\s\"'<>\\]*")
+
+def _curl_get_json_sync(url: str, headers: Optional[Dict[str,str]] = None, params: Optional[Dict[str,Any]] = None) -> Dict[str,Any]:
+    """Sync fetch via curl_cffi (chrome impersonate) to bypass Cloudflare, fallback to httpx."""
+    # try curl_cffi
+    try:
+        from curl_cffi import requests as creq
+        # curl_cffi handles params via URL building
+        if params:
+            from urllib.parse import urlencode
+            qs = urlencode({k:v for k,v in params.items() if v is not None})
+            url = url + ("&" if "?" in url else "?") + qs
+        r = creq.get(url, headers=headers or {}, impersonate="chrome", timeout=15)
+        r.raise_for_status()
+        txt = r.text.strip()
+        if not txt:
+            return {}
+        try:
+            return r.json()
+        except Exception:
+            return {"_raw": txt}
+    except Exception as e_curl:
+        # fallback to httpx sync
+        import httpx as _httpx
+        try:
+            with _httpx.Client(follow_redirects=True, timeout=15) as c:
+                r = c.get(url, headers=headers or {}, params=params)
+                r.raise_for_status()
+                txt = r.text.strip()
+                if not txt:
+                    return {}
+                try:
+                    return r.json()
+                except Exception:
+                    return {"_raw": txt}
+        except Exception:
+            raise e_curl
+
+def _curl_get_text_sync(url: str, headers: Optional[Dict[str,str]] = None) -> str:
+    try:
+        from curl_cffi import requests as creq
+        r = creq.get(url, headers=headers or {}, impersonate="chrome", timeout=15)
+        r.raise_for_status()
+        return r.text
+    except Exception as e_curl:
+        import httpx as _httpx
+        with _httpx.Client(follow_redirects=True, timeout=15) as c:
+            r = c.get(url, headers=headers or {})
+            r.raise_for_status()
+            return r.text
 
 class KyotoResolver:
     """Resolves Anilab post_id -> episodes -> servers -> .m3u8 URL via regex scrape."""
@@ -84,24 +135,18 @@ class KyotoResolver:
             return hit
         routes = await self.get_routes(post_id)
         url = routes["episodes"].replace("%id%", str(post_id)).replace("{id}", str(post_id))
-        # try with extra headers (Referer/X-Requested-With) then fallback to plain
-        data = None
-        for hdr_set in [routes.get("extra_headers") or {}, {}, {"Referer":"https://play.app/","X-Requested-With":"PLAY"}]:
-            try:
-                c = await self._get_client()
-                # merge headers
-                hdrs = {**self.headers, **hdr_set}
-                # for play.anidb.app, server expects browser-like UA fallback
-                r = await c.get(url, headers=hdrs)
-                r.raise_for_status()
-                data = r.json() if r.text.strip() else {}
-                break
-            except Exception as e:
-                last_err = e
-                continue
-        if data is None:
-            raise last_err
+        # use curl_cffi (chrome) to bypass Cloudflare on play.anidb.app
+        hdrs = {**self.headers, **(routes.get("extra_headers") or {}), "Referer":"https://play.app/", "X-Requested-With":"PLAY"}
+        # ensure browser-like UA for CF if okhttp UA fails
+        hdrs.setdefault("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        data = await asyncio.to_thread(_curl_get_json_sync, url, hdrs, None)
         lst = data.get("list") if isinstance(data, dict) else []
+        # if empty, retry with minimal browser UA
+        if not lst:
+            hdrs2 = {"Referer":"https://play.app/", "X-Requested-With":"PLAY", "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            data2 = await asyncio.to_thread(_curl_get_json_sync, url, hdrs2, None)
+            lst = data2.get("list") if isinstance(data2, dict) else []
+            if lst: data = data2
         episodes = [{"id": str(e.get("id")), "num": e.get("number") if e.get("number") is not None else "", "name": e.get("name") or ""} for e in (lst or [])]
         episode_cache().set(key, episodes, ttl=900)
         return episodes
@@ -113,21 +158,15 @@ class KyotoResolver:
             return hit
         routes = await self.get_routes(post_id)
         url = routes["servers"].replace("%id%", str(ep_id))
-        data = None
-        for hdr_set in [routes.get("extra_headers") or {}, {"Referer":"https://play.app/","X-Requested-With":"PLAY"}, {}]:
-            try:
-                c = await self._get_client()
-                hdrs = {**self.headers, **hdr_set}
-                r = await c.get(url, headers=hdrs)
-                r.raise_for_status()
-                data = r.json() if r.text.strip() else {}
-                break
-            except Exception as e:
-                last_err = e
-                continue
-        if data is None:
-            raise last_err
+        hdrs = {**self.headers, **(routes.get("extra_headers") or {}), "Referer":"https://play.app/", "X-Requested-With":"PLAY"}
+        hdrs.setdefault("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        data = await asyncio.to_thread(_curl_get_json_sync, url, hdrs, None)
         lst = data.get("list") if isinstance(data, dict) else []
+        if not lst:
+            hdrs2 = {"Referer":"https://play.app/", "X-Requested-With":"PLAY", "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            data2 = await asyncio.to_thread(_curl_get_json_sync, url, hdrs2, None)
+            lst = data2.get("list") if isinstance(data2, dict) else []
+            if lst: data = data2
         servers = [{"id": str(s.get("id")), "lang": "dub" if s.get("lang") == "dub" else "sub", "name": s.get("name") or f"Server {s.get('id')}"} for s in (lst or [])]
         episode_cache().set(key, servers, ttl=900)
         return servers
@@ -140,13 +179,19 @@ class KyotoResolver:
             return hit
         routes = await self.get_routes(post_id)
         iframe_url = routes["iframe"].replace("%id%", str(server_id))
-        # Step 1: GET iframe url -> {link}
-        data = await self._get_json(iframe_url)
+        # Step 1: GET iframe url -> {link} (via curl_cffi for CF)
+        hdrs = {**self.headers, **(routes.get("extra_headers") or {}), "Referer":"https://play.app/", "X-Requested-With":"PLAY"}
+        data = await asyncio.to_thread(_curl_get_json_sync, iframe_url, hdrs, None)
         link = data.get("link")
         if not link or not isinstance(link, str):
-            raise ValueError(f"Embedder returned no link for server {server_id}: {data}")
-        # Step 2: GET link -> raw HTML
-        html = await self._get_text(link)
+            # retry with browser UA only
+            hdrs2 = {"Referer":"https://play.app/", "X-Requested-With":"PLAY", "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            data = await asyncio.to_thread(_curl_get_json_sync, iframe_url, hdrs2, None)
+            link = data.get("link")
+            if not link or not isinstance(link, str):
+                raise ValueError(f"Embedder returned no link for server {server_id}: {data}")
+        # Step 2: GET link -> raw HTML (curl_cffi)
+        html = await asyncio.to_thread(_curl_get_text_sync, link, {"Referer":"https://play.app/", "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
         urls = list(dict.fromkeys(M3U8_RE.findall(html)))  # dedup preserve order
         if not urls:
             raise ValueError(f"No .m3u8 found on embed page {link}")

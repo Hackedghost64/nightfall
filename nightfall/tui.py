@@ -944,11 +944,18 @@ class MBXApp(App):
         if info.get("age"): await badges_box.mount(Static(f"🔞 {info.get('age')}", classes="badge"))
         if info.get("status"): await badges_box.mount(Static(f"📺 {info.get('status')}", classes="badge"))
         synopsis_box.update(overview)
-        # episodes via Kyoto
+        # episodes via Kyoto (now via curl_cffi chrome impersonate to bypass CF — nightfall/anilab/kyoto.py:15)
         eps_resp = await asyncio.to_thread(api_soft, f"/anime/post/{post_id}/episodes")
+        # api_soft returns None on auth error; check gateway error payload
+        err = (eps_resp or {}).get("error") or eps_resp
         eps = (eps_resp or {}).get("episodes") or []
         if not eps:
-            stream_box.update("No episodes found for this title.")
+            # Check if response was CF block or truly empty; show actionable hint
+            detail = (err.get("message") if isinstance(err, dict) else "") or ""
+            hint = ""
+            if "403" in str(detail) or "cf" in str(detail).lower():
+                hint = " (Cloudflare challenge — gateway now uses curl_cffi chrome, retry or check config.yaml kyoto.app-version, or use http://127.0.0.1:8399/anime/ui#post/{})".format(post_id)
+            stream_box.update(f"No episodes found for this title{hint}. Try related seasons or web UI.")
             return
         self._anime_eps = eps
         self._anime_pid = post_id
