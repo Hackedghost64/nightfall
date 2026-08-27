@@ -5,10 +5,13 @@ browser-like headers per request to avoid upstream fingerprinting.
 """
 from __future__ import annotations
 
+import contextvars
 import random
 import time
 import threading
 from typing import Any, Dict, List, Optional
+
+_request_profile: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar("_fp_request_profile", default=None)
 
 # Fallback profiles if config missing
 DEFAULT_PROFILES = [
@@ -83,12 +86,23 @@ class FingerprintManager:
             return self._session_profile or random.choice(self._profiles)
         if self._mode == "timed":
             now = time.time()
-            if self._current is None or (now - self._last_rotate) > self._interval:
-                self._current = random.choice(self._profiles)
-                self._last_rotate = now
-            return self._current
-        # per_request
-        return random.choice(self._profiles)
+            with self._lock:
+                if self._current is None or (now - self._last_rotate) > self._interval:
+                    self._current = random.choice(self._profiles)
+                    self._last_rotate = now
+                return self._current
+        # per_request — one profile per request context (ContextVar) for consistency
+        cur = _request_profile.get()
+        if cur is None:
+            cur = random.choice(self._profiles)
+            _request_profile.set(cur)
+        return cur
+
+    def reset_request(self) -> None:
+        try:
+            _request_profile.set(None)
+        except Exception:
+            pass
 
     def spoofed_headers(self, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Return dynamic spoofed headers to merge onto base."""

@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
-from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request, Path
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from .cache import CacheBucket
@@ -25,6 +26,20 @@ from .selfheal.healer import Healer
 log = logging.getLogger("mbw")
 
 state: Dict[str, Any] = {}
+state_lock = threading.Lock()
+_inflight: Dict[str, threading.Lock] = {}
+_inflight_global = threading.Lock()
+
+def _validate_subject_id(sid: str) -> str:
+    import re
+    if not re.match(r"^[0-9]{5,30}$", sid):
+        raise HTTPException(400, "invalid subject_id: must be 5-30 digits")
+    return sid
+
+def _validate_q(q: str) -> str:
+    if len(q) > 200:
+        raise HTTPException(400, "q too long (max 200)")
+    return q
 
 
 def build_client() -> UpstreamClient:
@@ -69,8 +84,11 @@ async def lifespan(app: FastAPI):
         log.info("startup heal scan: %s %s", report.status, report.message)
 
     state["keys"] = ApiKeyStore(cfg.device_file.parent)
+    # trusted proxies for X-Forwarded-For (empty = do not trust header)
+    trusted = cfg.get("security.trusted_proxies", []) or []
     state["limiter"] = SlidingWindowRateLimiter(
-        int(cfg.get("rate_limit_per_minute", 60) or 0))
+        int(cfg.get("rate_limit_per_minute", 60) or 0),
+        trusted_proxies=list(trusted) if isinstance(trusted, list) else [])
     app.state.auth_guard = make_auth_dependency(
         state["keys"], cfg.get("security.require_api_key", "auto"))
     yield
@@ -86,10 +104,14 @@ app = FastAPI(title="🌙 Nightfall — MovieBox Gateway (anime separated)",
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     limiter = state.get("limiter")
-    if limiter is not None and request.url.path not in ("/health",):
-        client_ip = (request.client.host if request.client
-                     else request.headers.get("x-forwarded-for", "?"))
-        if not limiter.check(client_ip.split(",")[0].strip()):
+    if limiter is not None and request.url.path not in ("/health", "/cache/stats", "/fingerprint/stats"):
+        try:
+            allowed = limiter.check(request)
+        except Exception:
+            # fallback to ip string
+            client_ip = (request.client.host if request.client else "?")
+            allowed = limiter.check(client_ip)  # type: ignore
+        if not allowed:
             return JSONResponse({"ok": False,
                                  "error": {"code": "RATE_LIMITED",
                                            "message": f"max {limiter.per_minute} req/min"}},
@@ -100,11 +122,19 @@ async def security_middleware(request: Request, call_next):
             guard(request)
         except HTTPException as exc:
             return JSONResponse({"ok": False,
-                                 "error": {"code": "UNAUTHORIZED",
-                                           "message": exc.detail}},
-                                status_code=exc.status_code,
-                                headers=exc.headers or {})
-    return await call_next(request)
+                                  "error": {"code": "UNAUTHORIZED",
+                                            "message": exc.detail}},
+                                 status_code=exc.status_code,
+                                 headers=exc.headers or {})
+    try:
+        response = await call_next(request)
+    finally:
+        # reset per-request fingerprint context for consistency
+        try:
+            from .fingerprint import get_manager
+            get_manager().reset_request()
+        except: pass
+    return response
 
 
 def _err(status: int, code: str, message: str, **extra) -> JSONResponse:
@@ -120,14 +150,41 @@ def _err(status: int, code: str, message: str, **extra) -> JSONResponse:
 
 def _call(cache_kind: Optional[str], cache_key: str,
           fn, debug_raw: bool = False) -> Dict[str, Any]:
-    cache = state["cache"]
+    cache = state.get("cache")
+    if cache is None:
+        return fn()
     if cache_kind and not debug_raw:
         hit = cache.for_kind(cache_kind).get(cache_key)
         if hit is not None:
             return hit
+        # singleflight: per-key lock to avoid stampede
+        with _inflight_global:
+            lk = _inflight.get(cache_key)
+            if lk is None:
+                lk = threading.Lock()
+                _inflight[cache_key] = lk
+        # try to become the fetcher; others wait and retry cache
+        acquired = lk.acquire(blocking=False)
+        if not acquired:
+            # wait for fetcher
+            with lk:
+                hit2 = cache.for_kind(cache_kind).get(cache_key)
+                if hit2 is not None:
+                    return hit2
+                # still miss, will fall through to fetch (rare double miss)
+                return fn()
+        try:
+            result = fn()
+            cache.for_kind(cache_kind).set(cache_key, result)
+            return result
+        finally:
+            lk.release()
+            with _inflight_global:
+                _inflight.pop(cache_key, None)
     result = fn()
     if cache_kind and not debug_raw:
-        cache.for_kind(cache_kind).set(cache_key, result)
+        # kind was None case already handled
+        pass
     return result
 
 
@@ -135,6 +192,9 @@ def _call(cache_kind: Optional[str], cache_key: str,
 
 @app.get("/health")
 def health():
+    # guard against startup race
+    if "detector" not in state or "store" not in state:
+        return {"ok": False, "wrapper_state": "STARTING", "remediation": "app starting"}
     det = state["detector"].status()
     cache_stats = {}
     try:
@@ -213,8 +273,18 @@ def heal():
     healer = Healer(state["store"], state["identity"])
     rep = healer.scan_and_heal(detector=state["detector"])
     if rep.status == "healed":
-        state["client"] = build_client()
-        state["cache"].clear()
+        with state_lock:
+            # refresh identity protocol (device_id preserved, app version updated)
+            try:
+                cfg = settings()
+                state["identity"] = DeviceIdentity(cfg.device_file, state["store"].data, region=cfg.get("region","US"))
+            except Exception:
+                pass
+            state["client"] = build_client()
+            try:
+                state["cache"].clear()
+            except Exception:
+                pass
     code = {"healed": 200, "current": 200}.get(rep.status, 409 if rep.status in
                                                ("structural_change", "probe_failed") else 400)
     return JSONResponse(rep.to_dict(), status_code=code)
@@ -265,10 +335,11 @@ def keys_create(body: dict = Body(...)):
 # ------------------------------------------------------------ content routes
 
 @app.get("/search")
-def search(q: str = Query(min_length=1),
-           page: int = 1, per_page: int = 20, type: Optional[int] = None,
+def search(q: str = Query(min_length=1, max_length=200),
+           page: int = Query(1, ge=1, le=1000), per_page: int = Query(20, ge=1, le=50), type: Optional[int] = None,
            debug_raw: bool = False):
     ep = Endpoints(state["store"].data["endpoints"]).get("search_v2")
+    _validate_q(q)
     body = {"page": page, "perPage": per_page, "keyword": q}
     if type is not None:
         body["subjectType"] = type
@@ -283,9 +354,10 @@ def search(q: str = Query(min_length=1),
 
 
 @app.get("/search/suggest")
-def search_suggest(q: str = Query(min_length=1)):
+def search_suggest(q: str = Query(min_length=1, max_length=200)):
     ep = Endpoints(state["store"].data["endpoints"]).get("search_suggest")
     try:
+        _validate_q(q)
         return state["client"].request(ep, params={"q": q})
     except UpstreamAuthError as exc:
         return _err(502, "UPSTREAM_AUTH_REJECTED", str(exc))
@@ -301,7 +373,8 @@ def search_rank():
 
 
 @app.get("/titles/{subject_id}")
-def title_detail(subject_id: str, debug_raw: bool = False):
+def title_detail(subject_id: str = Path(..., pattern="^[0-9]{5,30}$"), debug_raw: bool = False):
+    _validate_subject_id(subject_id)
     ep = Endpoints(state["store"].data["endpoints"]).get("subject_get")
     try:
         res = _call("metadata", f"detail:{subject_id}",
@@ -313,7 +386,8 @@ def title_detail(subject_id: str, debug_raw: bool = False):
 
 
 @app.get("/titles/{subject_id}/seasons")
-def seasons(subject_id: str):
+def seasons(subject_id: str = Path(..., pattern="^[0-9]{5,30}$")):
+    _validate_subject_id(subject_id)
     ep = Endpoints(state["store"].data["endpoints"]).get("season_info")
     try:
         return _call("metadata", f"seasons:{subject_id}",
@@ -323,7 +397,8 @@ def seasons(subject_id: str):
 
 
 @app.get("/titles/{subject_id}/episodes")
-def episodes(subject_id: str, season: int = 1, start: int = 1, end: int = 100):
+def episodes(subject_id: str = Path(..., pattern="^[0-9]{5,30}$"), season: int = Query(1, ge=0, le=100), start: int = Query(1, ge=1, le=1000), end: int = Query(100, ge=1, le=1000)):
+    _validate_subject_id(subject_id)
     ep = Endpoints(state["store"].data["endpoints"]).get("season_info")
     params = {"subjectId": subject_id, "se": season,
               "startPosition": start, "endPosition": end, "pagerMode": 1}
@@ -335,7 +410,7 @@ def episodes(subject_id: str, season: int = 1, start: int = 1, end: int = 100):
 
 
 @app.get("/titles/{subject_id}/stream")
-async def stream(request: Request, subject_id: str,
+async def stream(request: Request, subject_id: str = Path(..., pattern="^[0-9]{5,30}$"),
                  season: Optional[int] = None, episode: Optional[int] = None,
                  se: Optional[int] = None, ep: Optional[int] = None,
                  resolution: Optional[str] = None,
@@ -343,6 +418,7 @@ async def stream(request: Request, subject_id: str,
                  debug_raw: bool = False):
     explicit_se = season if season is not None else se
     explicit_ep = episode if episode is not None else ep
+    _validate_subject_id(subject_id)
     s = explicit_se if explicit_se is not None else 0
     e = explicit_ep if explicit_ep is not None else 0
     ep_def = Endpoints(state["store"].data["endpoints"]).get("play_info")
@@ -386,7 +462,7 @@ async def stream(request: Request, subject_id: str,
 
 
 @app.get("/titles/{subject_id}/download")
-async def download(request: Request, subject_id: str,
+async def download(request: Request, subject_id: str = Path(..., pattern="^[0-9]{5,30}$"),
                    season: Optional[int] = None, episode: Optional[int] = None,
                    se: Optional[int] = None, ep: Optional[int] = None,
                    page: int = 1, pages: int = 3, per_page: int = 10,
@@ -492,7 +568,8 @@ async def resources_alias(subject_id: str, request: Request,
 
 
 @app.get("/titles/{subject_id}/subtitles")
-def subtitles(subject_id: str, season: int = 1, episode: int = 1):
+def subtitles(subject_id: str = Path(..., pattern="^[0-9]{5,30}$"), season: int = Query(1, ge=0, le=100), episode: int = Query(1, ge=0, le=1000)):
+    _validate_subject_id(subject_id)
     ep = Endpoints(state["store"].data["endpoints"]).get("ext_captions")
     try:
         res = state["client"].request(ep, params={"subjectId": subject_id,

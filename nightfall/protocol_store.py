@@ -132,7 +132,8 @@ class ProtocolStore:
     @property
     def data(self) -> Dict[str, Any]:
         with self._lock:
-            return self._data
+            # return deep copy to prevent caller mutation without lock and stale refs
+            return copy.deepcopy(self._data)
 
     def required_keys(self) -> List[str]:
         return list(self.data.get("required_manifest_keys", REQUIRED_SECRETS))

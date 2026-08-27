@@ -142,17 +142,20 @@ class Healer:
 class _ShadowStore:
     """ProtocolStore duck-type over a candidate dict (no disk IO)."""
     def __init__(self, data: dict):
-        self._data = data
+        import copy
+        self._data = copy.deepcopy(data)
 
     @property
     def data(self) -> dict:
-        return self._data
+        import copy
+        return copy.deepcopy(self._data)
 
 
 class _ShadowIdentity(DeviceIdentity):
     def __init__(self, real: DeviceIdentity, proto: dict):
+        import copy, threading
         self.path = real.path
-        self.protocol = proto
+        self.protocol = copy.deepcopy(proto)
         self.region = real.region
-        self._lock = real._lock
-        self._data = real._data
+        self._lock = threading.Lock()
+        self._data = copy.deepcopy(real._data)

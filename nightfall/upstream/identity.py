@@ -27,12 +27,28 @@ class DeviceIdentity:
     def _load_or_create(self) -> Dict[str, Any]:
         if self.path.exists():
             try:
+                # ensure restrictive perms even on existing
+                try:
+                    import os
+                    os.chmod(self.path, 0o600)
+                except: pass
                 return json.loads(self.path.read_text(encoding="utf-8"))
             except Exception:
                 pass
         data = {"device_id": uuid.uuid4().hex, "first_seen": int(time.time())}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        try:
+            import os
+            os.chmod(tmp, 0o600)
+        except: pass
+        tmp.replace(self.path)
+        try:
+            import os
+            os.chmod(self.path, 0o600)
+            os.chmod(self.path.parent, 0o700)
+        except: pass
         return data
 
     @property
@@ -57,13 +73,25 @@ class DeviceIdentity:
                 "harvested_at": int(time.time()),
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+            try:
+                import os
+                os.chmod(tmp, 0o600)
+            except: pass
+            tmp.replace(self.path)
 
     def clear_session(self) -> None:
         with self._lock:
             self._data.pop("anon_session", None)
             if self.path.exists():
-                self.path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+                tmp = self.path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+                try:
+                    import os
+                    os.chmod(tmp, 0o600)
+                except: pass
+                tmp.replace(self.path)
 
     def client_token(self) -> str:
         """com.transsion.baselib.net.f / wg.a: ts + ',' + md5(reverse(ts))."""

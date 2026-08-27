@@ -229,18 +229,36 @@ class UpstreamClient:
             logs_dir = settings().logs_dir
             logs_dir.mkdir(parents=True, exist_ok=True)
             log = logs_dir / "upstream.log"
-            safe_headers = {k: v for k, v in headers.items()
-                            if k.lower() not in ("x-client-token", "token")}
+            # mask secrets, cap sizes, chmod
+            denylist = {"x-client-token","token","authorization","x-tr-signature","x-client-info","x-tr-device","cookie","set-cookie"}
+            safe_headers = {}
+            for k, v in headers.items():
+                lk = k.lower()
+                if lk in denylist:
+                    safe_headers[k] = v[:6] + "…(" + str(len(v)) + ")" if isinstance(v, str) and len(v) > 6 else "***"
+                else:
+                    safe_headers[k] = v
+            # cap log file size ~10MB rotate (truncate if too large)
+            try:
+                if log.exists() and log.stat().st_size > 10_000_000:
+                    # rotate: keep last 5k lines
+                    lines = log.read_text(encoding="utf-8", errors="ignore").splitlines()[-5000:]
+                    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            except: pass
             entry = {
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "endpoint": ep.name, "method": ep.method, "host": host,
-                "path": ep.path, "query": query,
-                "request_body": (body_bytes or b"").decode("utf-8", "replace")[:2000],
+                "path": ep.path, "query": query[:500],
+                "request_body": (body_bytes or b"").decode("utf-8", "replace")[:1000],
                 "request_headers": safe_headers,
                 "status": resp.status_code,
-                "response_body": resp.text[:4000],
+                "response_body": resp.text[:2000],
             }
             with open(log, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            try:
+                import os
+                os.chmod(log, 0o600)
+            except: pass
         except Exception:
             pass

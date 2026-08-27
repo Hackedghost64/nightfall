@@ -13,7 +13,9 @@ from typing import Any, Dict, Optional, Tuple
 class TTLCache:
     def __init__(self, ttl_seconds: int):
         self.ttl = ttl_seconds
-        self._store: Dict[str, Tuple[float, Any]] = {}
+        # OrderedDict for LRU eviction
+        from collections import OrderedDict
+        self._store: OrderedDict[str, Tuple[float, Any]] = OrderedDict()
         self._lock = threading.Lock()
         self.hits = 0
         self.misses = 0
@@ -30,17 +32,26 @@ class TTLCache:
                 del self._store[key]
                 self.misses += 1
                 return None
+            # move to end for LRU
+            self._store.move_to_end(key)
             self.hits += 1
             return value
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
         exp = time.time() + (ttl if ttl is not None else self.ttl)
         with self._lock:
-            if len(self._store) > 4096:
-                cutoff = time.time()
-                for k in [k for k, (e, _) in self._store.items() if e < cutoff]:
+            # LRU eviction: if over capacity, evict oldest (and any expired)
+            if len(self._store) >= 4096:
+                # first purge expired
+                now = time.time()
+                expired = [k for k, (e, _) in self._store.items() if e < now]
+                for k in expired:
                     del self._store[k]
+            # if still over, evict oldest
+            while len(self._store) >= 4096:
+                self._store.popitem(last=False)
             self._store[key] = (exp, value)
+            self._store.move_to_end(key)
 
     def clear(self) -> None:
         with self._lock:
@@ -48,7 +59,7 @@ class TTLCache:
 
 
 class FileDistributedCache:
-    """File-backed distributed cache: data/cache/<kind>/<hash>.json with {exp, val}."""
+    """File-backed distributed cache: data/cache/<kind>/<hash>.json with {exp, val} + fcntl lock."""
 
     def __init__(self, base_dir: Path, ttl_seconds: int):
         self.ttl = ttl_seconds
@@ -60,42 +71,99 @@ class FileDistributedCache:
 
     def _path(self, key: str) -> Path:
         h = hashlib.sha256(key.encode()).hexdigest()[:16]
-        # sanitize key prefix for debugging
         safe = "".join(c if c.isalnum() else "_" for c in key[:24])
         return self.base_dir / f"{safe}_{h}.json"
 
+    def _lock_file(self, p: Path):
+        # best-effort fcntl inter-process lock
+        try:
+            import fcntl
+            fh = open(p, "a+")
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            return fh
+        except Exception:
+            return None
+
     def get(self, key: str) -> Optional[Any]:
+        # also return remaining ttl via side-channel _last_remaining
         p = self._path(key)
         if not p.exists():
             self.misses += 1
             return None
+        fh = None
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
+            # try inter-process shared lock
+            try:
+                import fcntl
+                fh = open(p, "r")
+                fcntl.flock(fh, fcntl.LOCK_SH)
+                data = json.load(fh)
+            except Exception:
+                data = json.loads(p.read_text(encoding="utf-8"))
             exp = float(data.get("exp", 0))
-            if exp < time.time():
+            remaining = exp - time.time()
+            if remaining <= 0:
                 try: p.unlink()
                 except: pass
                 self.misses += 1
                 return None
             self.hits += 1
+            # store remaining for HybridCache to propagate
+            self._last_remaining = int(remaining)
             return data.get("val")
         except Exception:
             self.misses += 1
             return None
+        finally:
+            if fh:
+                try:
+                    import fcntl
+                    fcntl.flock(fh, fcntl.LOCK_UN); fh.close()
+                except: pass
+
+    def get_with_remaining(self, key: str) -> tuple[Optional[Any], int]:
+        v = self.get(key)
+        rem = getattr(self, "_last_remaining", self.ttl)
+        return v, rem
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
         exp = time.time() + (ttl if ttl is not None else self.ttl)
         p = self._path(key)
         try:
             tmp = p.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"exp": exp, "val": value}, ensure_ascii=False), encoding="utf-8")
+            # inter-process exclusive lock during write
+            fh = None
+            try:
+                import fcntl
+                fh = open(tmp, "w")
+                fcntl.flock(fh, fcntl.LOCK_EX)
+                fh.write(json.dumps({"exp": exp, "val": value}, ensure_ascii=False))
+                fh.flush()
+                fcntl.flock(fh, fcntl.LOCK_UN)
+                fh.close(); fh = None
+            except Exception:
+                tmp.write_text(json.dumps({"exp": exp, "val": value}, ensure_ascii=False), encoding="utf-8")
+            try:
+                if fh: fh.close()
+            except: pass
             tmp.replace(p)
+            # ensure perms
+            try: os.chmod(p, 0o600)
+            except: pass
         except Exception:
             pass
 
     def clear(self) -> None:
         for f in self.base_dir.glob("*.json"):
-            try: f.unlink()
+            try:
+                # lock before unlink
+                try:
+                    import fcntl
+                    fh = open(f, "r")
+                    fcntl.flock(fh, fcntl.LOCK_EX)
+                    fh.close()
+                except: pass
+                f.unlink()
             except: pass
 
 
@@ -187,17 +255,32 @@ class HybridCache:
         v = self.mem.get(key)
         if v is not None:
             return v
-        # miss in mem, try distributed
+        # miss in mem, try distributed with TTL propagation
         if self.file_cache:
-            v = self.file_cache.get(key)
-            if v is not None:
-                # repopulate mem
-                self.mem.set(key, v)
-                return v
+            # use get_with_remaining to preserve expiry
+            if hasattr(self.file_cache, "get_with_remaining"):
+                v, rem = self.file_cache.get_with_remaining(key)  # type: ignore
+                if v is not None:
+                    self.mem.set(key, v, ttl=max(1, rem))
+                    return v
+            else:
+                v = self.file_cache.get(key)
+                if v is not None:
+                    self.mem.set(key, v)
+                    return v
         if self.redis_cache:
             v = self.redis_cache.get(key)
             if v is not None:
-                self.mem.set(key, v)
+                # redis already handles TTL via EX, mem gets full ttl (approx); could use remaining but keep simple
+                # try to get remaining via TTL command
+                try:
+                    rem = self.redis_cache._client.ttl(self.redis_cache._k(key))  # type: ignore
+                    if rem and rem > 0:
+                        self.mem.set(key, v, ttl=rem)
+                    else:
+                        self.mem.set(key, v)
+                except Exception:
+                    self.mem.set(key, v)
                 return v
         return None
 

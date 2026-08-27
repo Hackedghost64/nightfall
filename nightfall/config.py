@@ -191,6 +191,20 @@ class Settings:
                 for p in path[:-1]:
                     node = node.setdefault(p, {})
                 node[path[-1]] = env_val
+        # coerce numeric strings for known int fields
+        for dotted in ["server.port", "rate_limit_per_minute", "upstream_timeout_seconds",
+                       "selfheal.auth_fail_threshold", "fingerprint.rotation_interval_seconds",
+                       "cache_ttl.metadata", "cache_ttl.search", "cache_ttl.stream"]:
+            cur = merged
+            parts = dotted.split(".")
+            try:
+                for p in parts[:-1]:
+                    cur = cur[p]
+                last = parts[-1]
+                if last in cur and isinstance(cur[last], str) and cur[last].strip().lstrip("-").isdigit():
+                    cur[last] = int(cur[last].strip())
+            except Exception:
+                pass
         self._d = merged
 
     def p(self, rel: str) -> Path:
