@@ -1,28 +1,25 @@
-# 🌙 NIGHTFALL — MovieBox Gateway (anime separated to ../anime-app)
 moviebox:
   api_hosts:
-    - api6.aoneroom.com
-    - i-api.aoneroom.com
-  hmac_secret: ""
-  signing_version: "2"
-  user_agent: "MovieBox/3.0.14"
-
+  - api6.aoneroom.com
+  - i-api.aoneroom.com
+  hmac_secret: ''
+  signing_version: '2'
+  user_agent: MovieBox/3.0.14
 server:
-  host: "0.0.0.0"
+  host: 0.0.0.0
   port: 8399
-  api_key_file: "data/api.key"
-
+  api_key_file: data/api.key
 player:
-  preferred: "vlc"
-  fallback_order: ["vlc", "mpv", "ffplay"]
-
+  preferred: vlc
+  fallback_order:
+  - vlc
+  - mpv
+  - ffplay
 downloads:
-  directory: "downloads"
-  filename_template: "{title}/{season}x{episode}_{quality}.mp4"
-
+  directory: downloads
+  filename_template: '{title}/{season}x{episode}_{quality}.mp4'
 mode: links
 region: US
-
 paths:
   protocol_file: protocol/protocol.yaml
   watch_dir: watch
@@ -30,23 +27,59 @@ paths:
   logs_dir: logs
   backups_dir: protocol/backups
   downloads_dir: downloads
-
 cache_ttl:
   metadata: 3600
   search: 600
   stream: 120
-
+cache:
+  backend: memory
+  distributed: false
+  redis_url: redis://127.0.0.1:6379/0
+  file_dir: data/cache
+fingerprint:
+  enabled: true
+  rotation: per_request
+  rotation_interval_seconds: 300
+  spoof_headers: true
+  profiles:
+  - brand: Google
+    model: Pixel 8 Pro
+    os_version: '14'
+    lang: en
+    timezone: America/New_York
+  - brand: Google
+    model: Pixel 7
+    os_version: '14'
+    lang: en
+    timezone: America/Los_Angeles
+  - brand: Samsung
+    model: SM-S928B
+    os_version: '14'
+    lang: en
+    timezone: America/New_York
+  - brand: Xiaomi
+    model: 2304FPN6DC
+    os_version: '13'
+    lang: en
+    timezone: Europe/Berlin
+  - brand: OnePlus
+    model: CPH2609
+    os_version: '14'
+    lang: en
+    timezone: Asia/Kolkata
 rate_limit_per_minute: 60
 upstream_timeout_seconds: 15
 log_raw_traffic: true
-
 selfheal:
   auto_scan_on_start: true
   auth_fail_threshold: 3
   verify_probe_on_heal: true
   offline: false
-
 security:
   require_api_key: auto
-
-media_allow_host_suffixes: [aoneroom.com, aliyuncs.com, akamaized.net, cloudcdn.net, hakunaymatata.com]
+media_allow_host_suffixes:
+- aoneroom.com
+- aliyuncs.com
+- akamaized.net
+- cloudcdn.net
+- hakunaymatata.com

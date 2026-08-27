@@ -74,6 +74,9 @@ def main() -> int:
     p_doc.add_argument("--live", action="store_true")
     sub.add_parser("heal")
     p_ext = sub.add_parser("extract"); p_ext.add_argument("source")
+    p_guide = sub.add_parser("guide", help="whole project guide: use cases, setup, architecture (not just commands)")
+    p_guide.add_argument("--json", action="store_true", help="JSON output for scripts")
+    p_guide.add_argument("--use-cases", action="store_true", help="only use cases section")
 
     args = ap.parse_args()
 
@@ -244,6 +247,10 @@ def main() -> int:
             print(f"Open manually:\n  {url}"); return 0
         proc = launch_player(player, url, f"{picked.get('title')} S{se}E{ep:02d}", cookie=(stream or {}).get("cookie"))
         print(f"launched {player} (pid {proc.pid})"); return proc.wait() or 0
+
+    if args.cmd == "guide":
+        from .guide import print_guide
+        return print_guide(use_cases_only=bool(args.use_cases), as_json=bool(args.json))
 
     # ---- maintenance ------------------------------------------------------
     from .config import settings

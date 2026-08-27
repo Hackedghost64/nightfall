@@ -75,6 +75,19 @@ class DeviceIdentity:
                     timezone_name: str = "America/New_York",
                     brand: str = "Google", model: str = "Pixel 8 Pro",
                     os_version: str = "14") -> str:
+        # Dynamic fingerprint: if enabled, use spoofed profile
+        try:
+            from ..fingerprint import get_manager
+            fm = get_manager()
+            if fm.is_enabled():
+                prof = fm.current_profile()
+                brand = prof.get("brand", brand)
+                model = prof.get("model", model)
+                os_version = prof.get("os_version", os_version)
+                language = prof.get("lang", language)
+                timezone_name = prof.get("timezone", timezone_name)
+        except Exception:
+            pass
         app = self.protocol.get("app", {})
         info = {
             "package_name": app.get("package"),
@@ -98,9 +111,23 @@ class DeviceIdentity:
         proto = self.protocol
         ident = proto.get("identity_headers", {})
         token = self.client_token()
+        # Dynamic fingerprint for User-Agent / brand
+        ua_brand = "Google"
+        ua_model = "Pixel 8 Pro"
+        ua_os = "14"
+        try:
+            from ..fingerprint import get_manager
+            fm = get_manager()
+            if fm.is_enabled():
+                prof = fm.current_profile()
+                ua_brand = prof.get("brand", ua_brand)
+                ua_model = prof.get("model", ua_model)
+                ua_os = prof.get("os_version", ua_os)
+        except Exception:
+            pass
         headers = {
             "accept": "application/json, text/plain, */*",
-            "user-agent": (f"MovieBox/{app_ver(proto)} (Android 14; Pixel 8 Pro)"),
+            "user-agent": (f"MovieBox/{app_ver(proto)} (Android {ua_os}; {ua_model})"),
             "x-tr-app": proto.get("app", {}).get("package", ""),
             "x-tr-version": app_ver(proto),
             "x-tr-device": self.device_id,
@@ -112,6 +139,14 @@ class DeviceIdentity:
         ci = ident.get("client_info")
         if ci:
             headers[ci] = self.client_info()
+        # Dynamic header spoofing (Sec-CH-UA etc.)
+        try:
+            from ..fingerprint import get_manager as _gm
+            fm = _gm()
+            if fm.is_enabled() and fm._spoof_headers:
+                headers.update(fm.spoofed_headers())
+        except Exception:
+            pass
         return headers
 
 

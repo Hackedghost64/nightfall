@@ -47,8 +47,19 @@ async def lifespan(app: FastAPI):
     state["detector"] = StalenessDetector(
         threshold=int(cfg.get("selfheal.auth_fail_threshold", 3)))
     state["client"] = build_client()
+    # Distributed cache init (memory/file/redis)
+    cache_cfg = cfg.get("cache", {}) or {}
+    backend = cache_cfg.get("backend", "memory")
+    distributed = bool(cache_cfg.get("distributed", False))
+    redis_url = cache_cfg.get("redis_url", "redis://127.0.0.1:6379/0")
+    file_dir = cfg.app_root / str(cache_cfg.get("file_dir", "data/cache"))
+    if distributed and backend == "file":
+        file_dir.mkdir(parents=True, exist_ok=True)
     state["cache"] = CacheBucket({k: int(v) for k, v in
-                                  settings().get("cache_ttl", {}).items()})
+                                  settings().get("cache_ttl", {}).items()},
+                                  backend=backend, distributed=distributed,
+                                  redis_url=redis_url, file_dir=file_dir)
+    log.info("cache: backend=%s distributed=%s redis=%s", backend, distributed, redis_url if distributed and backend=="redis" else "-")
     if cfg.get("selfheal.auto_scan_on_start"):
         report = Healer(state["store"], state["identity"]).scan_and_heal(
             detector=state["detector"], client_factory=lambda s, i:
@@ -125,6 +136,17 @@ def _call(cache_kind: Optional[str], cache_key: str,
 @app.get("/health")
 def health():
     det = state["detector"].status()
+    cache_stats = {}
+    try:
+        cache_stats = state.get("cache").stats() if state.get("cache") else {}
+    except Exception:
+        pass
+    fp_stats = {}
+    try:
+        from .fingerprint import get_manager
+        fp_stats = get_manager().stats()
+    except Exception:
+        pass
     return {
         "ok": True,
         "wrapper_state": det["state"],
@@ -133,7 +155,49 @@ def health():
         "source_apk": state["store"].data.get("source_apk"),
         "mode": settings().get("mode"),
         "remediation": det["remediation"],
+        "cache": cache_stats,
+        "fingerprint": fp_stats,
     }
+
+
+@app.get("/cache/stats")
+def cache_stats():
+    try:
+        return {"ok": True, "cache": state["cache"].stats()}
+    except Exception as e:
+        return _err(500, "CACHE_ERROR", str(e))
+
+
+@app.post("/cache/clear")
+def cache_clear():
+    try:
+        state["cache"].clear()
+        return {"ok": True, "message": "cache cleared (memory + distributed)"}
+    except Exception as e:
+        return _err(500, "CACHE_ERROR", str(e))
+
+
+@app.get("/fingerprint/stats")
+def fingerprint_stats():
+    try:
+        from .fingerprint import get_manager
+        return {"ok": True, "fingerprint": get_manager().stats()}
+    except Exception as e:
+        return _err(500, "FINGERPRINT_ERROR", str(e))
+
+
+@app.post("/fingerprint/rotate")
+def fingerprint_rotate():
+    try:
+        from .fingerprint import get_manager
+        fm = get_manager()
+        # force rotation
+        fm._last_rotate = 0
+        fm._current = None
+        prof = fm.current_profile()
+        return {"ok": True, "new_profile": prof}
+    except Exception as e:
+        return _err(500, "FINGERPRINT_ERROR", str(e))
 
 
 @app.get("/doctor")

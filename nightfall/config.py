@@ -83,6 +83,27 @@ cache_ttl:
   search: 600
   stream: 120
 
+# Distributed caching: memory | file | redis
+cache:
+  backend: memory          # memory | file | redis
+  distributed: false       # true = share across processes / hosts via file or redis
+  redis_url: "redis://127.0.0.1:6379/0"
+  file_dir: "data/cache"
+
+# Dynamic header & fingerprint spoofing
+fingerprint:
+  enabled: true
+  rotation: per_request     # per_request | per_session | timed
+  rotation_interval_seconds: 300
+  spoof_headers: true
+  # profiles are brand/model/os_version pools — random per rotation
+  profiles:
+    - {brand: "Google", model: "Pixel 8 Pro", os_version: "14", lang: "en", timezone: "America/New_York"}
+    - {brand: "Google", model: "Pixel 7", os_version: "14", lang: "en", timezone: "America/Los_Angeles"}
+    - {brand: "Samsung", model: "SM-S928B", os_version: "14", lang: "en", timezone: "America/New_York"}
+    - {brand: "Xiaomi", model: "2304FPN6DC", os_version: "13", lang: "en", timezone: "Europe/Berlin"}
+    - {brand: "OnePlus", model: "CPH2609", os_version: "14", lang: "en", timezone: "Asia/Kolkata"}
+
 rate_limit_per_minute: 60
 upstream_timeout_seconds: 15
 log_raw_traffic: true
@@ -120,6 +141,20 @@ DEFAULTS: Dict[str, Any] = {
         "downloads_dir": "downloads",
     },
     "cache_ttl": {"metadata": 3600, "search": 600, "stream": 120},
+    "cache": {"backend": "memory", "distributed": False, "redis_url": "redis://127.0.0.1:6379/0", "file_dir": "data/cache"},
+    "fingerprint": {
+        "enabled": True,
+        "rotation": "per_request",
+        "rotation_interval_seconds": 300,
+        "spoof_headers": True,
+        "profiles": [
+            {"brand": "Google", "model": "Pixel 8 Pro", "os_version": "14", "lang": "en", "timezone": "America/New_York"},
+            {"brand": "Google", "model": "Pixel 7", "os_version": "14", "lang": "en", "timezone": "America/Los_Angeles"},
+            {"brand": "Samsung", "model": "SM-S928B", "os_version": "14", "lang": "en", "timezone": "America/New_York"},
+            {"brand": "Xiaomi", "model": "2304FPN6DC", "os_version": "13", "lang": "en", "timezone": "Europe/Berlin"},
+            {"brand": "OnePlus", "model": "CPH2609", "os_version": "14", "lang": "en", "timezone": "Asia/Kolkata"},
+        ],
+    },
     "rate_limit_per_minute": 60,
     "upstream_timeout_seconds": 15,
     "log_raw_traffic": True,
