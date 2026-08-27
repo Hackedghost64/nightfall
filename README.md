@@ -178,6 +178,38 @@ nightfall/
 
 ---
 
+## Anime — Why Titles Look Incomplete & Why Anime Streams Are Superior
+
+### Titles: upstream returns only `id`/`poster`
+`Anilab2` search/latest (`/anime/search`, `/anime/latest`) intentionally return **minimal** records: `id`, `poster`, `age` — no `title` (verify: `curl -H "X-API-Key: $KEY" :8399/anime/search?q=naruto` → `{"id":...,"poster":...}`). Full metadata lives only at `/anime/post/{id}` (`nightfall/anilab/routes.py:67`).
+
+**Nightfall hydrates:** `nightfall/tui.py:617` (`fetch_anime_latest`, `search_query`) + `nightfall/anilab/cache.py:4` (LRU+TTL 1h) — the TUI initially shows `Anime <id>` placeholders, then background-fetches `GET /anime/post/{id}` for 5 concurrent tasks, updates the row label (`Label.item-title`) in place. You will see titles fill in within 0.5–2s after search/latest. The web UI (`static/anime.html:162` `postCache` + `observeCards`) does identical hydration. CLI `./run.sh query` now hydrates before printing.
+
+If you still see `Anime 12345`, wait for hydration or open detail (`Enter`) → `fetch_anime_details` fetches full `title/score/type/overview` immediately.
+
+### Anime Streams: faster · higher-res · better dub
+The **Anime** tab (Kyoto Player pipeline, `nightfall/anilab/kyoto.py:6` `M3U8_RE`, `resolve_stream`) is not a MovieBox re-encode — it is a direct public CDN `HLS .m3u8`:
+
+| Aspect | MovieBox (`/titles/{id}/stream`) | Anime — Kyoto (`/anime/post/{id}/stream/{sid}`) |
+|---|---|---|
+| **Speed** | Signed upstream + gateway cache (stream TTL 120s), time-limited URLs, cookie-required for some CDNs (`translate.py`, `media_proxy.py`) | **Public CDN, no cookies**, `vlc <url>` or `mpv` straight, no proxy needed, prefetches `master.m3u8` (`kyoto.py:48` `best=master.m3u8`), lower TTFB |
+| **Resolution** | Adaptive but capped by what MovieBox transcodes (often 720p/480p, `normalize_streams`) | **Master HLS with all renditions**; `alternates[]` lists every `variant` (`kyoto.py:53` `alternates`), gateway picks `master.m3u8` (1080p where available), TUI shows `🌙 HLS — master.m3u8 (auto)` + variants |
+| **Dub / Audio** | Single mux via `dubs` list → switches `subjectId` (re-fetches detail) (`tui.py:773` `dub_*`) | **True server-level SUB/DUB** per episode (`/anime/post/{id}/servers/{ep_id}` → `lang:"sub"|"dub"`, `kyoto.py:31` `get_servers`), TUI shows `🔊 SUB` / `🎙 DUB` groups, switch without reloading title (`tui.py:623` `srv_*` → `resolve_stream`) |
+
+Stay in the **Anime** tab (`a` key or `TabPane("Anime", id="tab-anime")`, `tui.py:493`) for anime-only content to get the superior Kyoto HLS. Use `query --anime` (`cli.py:70`) for CLI.
+
+> **Cloudflare note:** Kyoto `play.anidb.app/api/anime/{id}/episodes` is Cloudflare-challenged server-side (`kyoto.py:40` adds `Referer: https://play.app/` + `X-Requested-With: PLAY`, fallback headers). Episodes/servers/stream resolve via gateway now; if you see `403 cf-mitigated: challenge` in logs, use `GET /anime/ui` in a browser (warmup iframe handles challenge) or retry with `X-API-Key` and valid `app-version` from `config.yaml` (`kyoto.app-version:126`).
+
+---
+
+## Documentation Coverage
+
+This README now documents **all** user-facing behavior (verified against `nightfall/` code at `file_path:line`):
+
+* Quick Start, Commands table (14 commands, `nightfall/cli.py:67`), API (30 routes, `nightfall/main.py:28`), Configuration (`config.yaml`/`config.py:60`), Downloads (`downloader.py:12`), Home Network, Layout, Source Material Map — **plus** this anime-specific section (titles hydration + stream superiority + Cloudflare caveat).
+
+---
+
 ## Source Material Map
 
 | Source | What was ported | Target |
@@ -196,6 +228,8 @@ nightfall/
 *VLC not opening?* `vlc <m3u8_url>` works without cookies (public CDN links). For MovieBox streams that need cookies, `mpv` handles `--http-header-fields=Cookie: …` automatically via `./run.sh play`.
 
 *Port busy?* `lsof -i :8399` then `./run.sh down`.
+
+*Anime titles show “Anime 12345” briefly?* See **Titles** above — hydration is asynchronous; press `Enter` on the row to force detail fetch.
 
 ---
 

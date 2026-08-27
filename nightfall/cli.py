@@ -182,13 +182,24 @@ def main() -> int:
                         c=AnilabClient(); r=await c.search(query_str); await c.close(); return r
                     anime=asyncio.run(_a2())[:8]
                 except Exception: pass
+            # hydrate anime titles (search returns only id/poster, need post detail)
+            hydrated_anime=[]
+            for a in anime:
+                if not a.get("title"):
+                    try:
+                        d3=api_soft(f"/anime/post/{a.get('id')}")
+                        info=(d3 or {}).get("data") or {}
+                        if info.get("title"): a=dict(a); a["title"]=info["title"]; a["score"]=info.get("score") or a.get("score")
+                    except Exception: pass
+                hydrated_anime.append(a)
+            anime=hydrated_anime
         merged=[]
         for m in movies: merged.append(("[M]", m.get("title") or m.get("id"), m))
-        for a in anime: merged.append(("[A]", a.get("title") or a.get("id") or a.get("poster"), a))
+        for a in anime: merged.append(("[A]", a.get("title") or f"Anime {a.get('id')}", a))
         if not merged: print("No results found."); return 1
         for i,(tag,title,obj) in enumerate(merged,1):
             extra=""
-            if tag=="[A]": extra=f" id={obj.get('id')}"
+            if tag=="[A]": extra=f" id={obj.get('id')} score={obj.get('score') or ''}"
             else: extra=f" id={obj.get('id')} year={obj.get('year') or ''}"
             print(f" {i:2d}. {tag} {title}{extra}")
         try: choice=input("\nPick number (or 'q' to quit): ").strip()

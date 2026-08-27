@@ -566,23 +566,24 @@ class MBXApp(App):
         list_view.clear()
         for item in results:
             list_view.append(TitleItemWidget(item))
-        # also populate anime list
+        # also populate anime list (hydrate titles in background)
         try:
             a_list = self.query_one("#anime-list", ListView)
             a_list.clear()
             for p in anime_posts:
-                # normalize anime post to TitleItemWidget shape
                 item = {"id": str(p.get("id")), "title": p.get("title") or f"Anime {p.get('id')}", "year": p.get("premiered") or p.get("age") or "", "rating": p.get("score") or "", "type": 2, "poster": p.get("poster")}
-                # mark anime with extra flag
                 item["_anime"] = True
                 a_list.append(TitleItemWidget(item))
+            # hydrate real titles asynchronously
+            if anime_posts:
+                await self._hydrate_anime_titles(anime_posts, a_list)
         except Exception:
             pass
         total = len(results) + len(anime_posts)
         if total==0:
             self.query_one("#status-bar", Static).update(f"No results found for '{query}'.")
             return
-        self.query_one("#status-bar", Static).update(f"Found {len(results)} movies + {len(anime_posts)} anime for '{query}'. [a]=anime tab")
+        self.query_one("#status-bar", Static).update(f"Found {len(results)} movies + {len(anime_posts)} anime for '{query}'. [a]=anime tab  |  Anime titles hydrate in background — see Anime tab")
         list_view.index = 0
 
     @work(exclusive=True)
@@ -609,10 +610,57 @@ class MBXApp(App):
                 a_list = self.query_one("#anime-list", ListView)
                 a_list.clear()
                 for p in posts[:25]:
+                    # upstream search/latest only returns id/poster/age — hydrate title via post
                     item = {"id": str(p.get("id")), "title": p.get("title") or f"Anime {p.get('id')}", "year": p.get("premiered") or p.get("age") or "", "rating": p.get("score") or "", "type": 2, "poster": p.get("poster"), "_anime": True}
                     a_list.append(TitleItemWidget(item))
+                # background hydration: replace placeholder titles with real titles from /anime/post/{id}
+                await self._hydrate_anime_titles(posts[:25], a_list)
             except Exception:
                 pass
+
+    async def _hydrate_anime_titles(self, posts, list_view) -> None:
+        """Fetch full titles for anime posts that only have id/poster (upstream limitation)."""
+        import asyncio as _aio
+        # limit concurrency to avoid rate limits
+        sem = _aio.Semaphore(5)
+        # collect widgets in order
+        widgets = list(list_view.children) if hasattr(list_view, 'children') else []
+        # but ListView stores items via query; use index mapping
+        async def _fetch_one(idx, p):
+            async with sem:
+                pid = str(p.get("id"))
+                # skip if already has real title
+                if p.get("title"):
+                    return
+                try:
+                    # use gateway if available, else direct
+                    data = await _aio.to_thread(api_soft, f"/anime/post/{pid}")
+                    info = (data or {}).get("data") or {}
+                    title = info.get("title")
+                    if title:
+                        # update backing data
+                        try:
+                            w = list_view.children[idx] if idx < len(list_view.children) else None
+                            if w and hasattr(w, 'title_data'):
+                                w.title_data["title"] = title
+                                w.title_data["year"] = info.get("premiered") or info.get("age") or w.title_data.get("year")
+                                w.title_data["rating"] = info.get("score") or w.title_data.get("rating")
+                                # update visible label: TitleItemWidget contains Horizontal > Label.item-title
+                                try:
+                                    label = w.query_one(".item-title", Label)
+                                    label.update(f"{title} ({w.title_data.get('year') or ''})".strip())
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        if not widgets:
+            # fallback: ListView may use internal list, hydrate sequentially
+            for i, p in enumerate(posts):
+                await _fetch_one(i, p)
+        else:
+            await _aio.gather(*[_fetch_one(i, p) for i, p in enumerate(posts)])
 
     def action_load_anime(self) -> None:
         self.query_one("#tabs", TabbedContent).active = "tab-anime"
