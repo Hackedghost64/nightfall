@@ -65,7 +65,7 @@ def extract_api_key(request: Request) -> Optional[str]:
     return request.query_params.get("api_key")
 
 def make_auth_dependency(store: ApiKeyStore, mode: str):
-    public_paths = {"/health","/docs","/openapi.json","/redoc","/anime/ui"}
+    public_paths = {"/health","/docs","/openapi.json","/redoc"}
     def guard(request: Request) -> None:
         # allow public paths
         if request.url.path in public_paths or request.url.path.startswith("/docs") or request.url.path.startswith("/openapi"):

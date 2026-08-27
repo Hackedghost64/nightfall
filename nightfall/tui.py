@@ -1,4 +1,4 @@
-"""MBX Textual Terminal App: Modern, visual interactive movie & series center.
+"""🌙 Nightfall Textual Terminal App: MovieBox-only (anime removed to ../anime-app).
 
 Includes search, trending rankings, watch history, episode selector,
 quality chooser, live download manager, and player launch (MPV/VLC).
@@ -282,7 +282,7 @@ class TitleItemWidget(ListItem):
 
 
 class MBXApp(App):
-    """🌙 NIGHTFALL · Private Cinema Gateway — Movies + Anime unified."""
+    """🌙 NIGHTFALL · Private Cinema Gateway — MovieBox only (anime separated to ../anime-app)."""
     CSS = """
     Screen {
         background: #0f172a;
@@ -468,7 +468,6 @@ class MBXApp(App):
         Binding("d", "download_title", "Download", show=True),
         Binding("r", "load_trending", "Rankings", show=True),
         Binding("h", "load_history", "History", show=True),
-        Binding("a", "load_anime", "Anime", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
 
@@ -490,14 +489,12 @@ class MBXApp(App):
         yield Static(id="status-bar", content="Connecting to local gateway…")
         with Horizontal(id="main-container"):
             with Vertical(id="left-pane"):
-                yield Input(placeholder="🔍 Search movies, series, anime… (Press Enter)", id="search-box")
+                yield Input(placeholder="🔍 Search movies, series… (Press Enter)", id="search-box")
                 with TabbedContent(id="tabs"):
                     with TabPane("Results", id="tab-results"):
                         yield ListView(id="results-list")
                     with TabPane("Trending", id="tab-trending"):
                         yield ListView(id="trending-list")
-                    with TabPane("Anime", id="tab-anime"):
-                        yield ListView(id="anime-list")
                     with TabPane("History", id="tab-history"):
                         yield ListView(id="history-list")
             with VerticalScroll(id="right-pane"):
@@ -530,8 +527,6 @@ class MBXApp(App):
         self.load_history_tab()
         self.query_one("#search-box", Input).focus()
         self.fetch_trending()
-        # also fetch anime latest in background
-        self.fetch_anime_latest()
 
     @work(exclusive=True)
     async def update_gateway_status(self) -> None:
@@ -551,39 +546,22 @@ class MBXApp(App):
 
     @work(exclusive=True)
     async def search_query(self, query: str) -> None:
-        self.query_one("#status-bar", Static).update(f"Searching movies + anime for '{query}'…")
-        # concurrent: movie + anime
-        def _movie_search():
-            return api_soft("/search", {"q": query})
-        def _anime_search():
-            return api_soft("/anime/search", {"q": query})
-        resp, anime_resp = await asyncio.to_thread(lambda: (_movie_search(), _anime_search()))
+        self.query_one("#status-bar", Static).update(f"Searching for '{query}'…")
+        resp = await asyncio.to_thread(api_soft, "/search", {"q": query})
         results = ((resp or {}).get("normalized") or {}).get("results") or []
-        anime_posts = ((anime_resp or {}).get("posts") or [])[:10]
-        # render movies in results, anime in anime tab
+
         self.query_one("#tabs", TabbedContent).active = "tab-results"
         list_view = self.query_one("#results-list", ListView)
         list_view.clear()
-        for item in results:
-            list_view.append(TitleItemWidget(item))
-        # also populate anime list (hydrate titles in background)
-        try:
-            a_list = self.query_one("#anime-list", ListView)
-            a_list.clear()
-            for p in anime_posts:
-                item = {"id": str(p.get("id")), "title": p.get("title") or f"Anime {p.get('id')}", "year": p.get("premiered") or p.get("age") or "", "rating": p.get("score") or "", "type": 2, "poster": p.get("poster")}
-                item["_anime"] = True
-                a_list.append(TitleItemWidget(item))
-            # hydrate real titles asynchronously
-            if anime_posts:
-                await self._hydrate_anime_titles(anime_posts, a_list)
-        except Exception:
-            pass
-        total = len(results) + len(anime_posts)
-        if total==0:
+
+        if not results:
             self.query_one("#status-bar", Static).update(f"No results found for '{query}'.")
             return
-        self.query_one("#status-bar", Static).update(f"Found {len(results)} movies + {len(anime_posts)} anime for '{query}'. [a]=anime tab  |  Anime titles hydrate in background — see Anime tab")
+
+        for item in results:
+            list_view.append(TitleItemWidget(item))
+
+        self.query_one("#status-bar", Static).update(f"Found {len(results)} matches for '{query}'.")
         list_view.index = 0
 
     @work(exclusive=True)
@@ -601,71 +579,6 @@ class MBXApp(App):
             for item in items[:25]:
                 t_list.append(TitleItemWidget(normalize_title_item(item)))
 
-    @work(exclusive=True)
-    async def fetch_anime_latest(self) -> None:
-        resp = await asyncio.to_thread(api_soft, "/anime/latest", {"page": 1})
-        posts = (resp or {}).get("posts") or []
-        if posts:
-            try:
-                a_list = self.query_one("#anime-list", ListView)
-                a_list.clear()
-                for p in posts[:25]:
-                    # upstream search/latest only returns id/poster/age — hydrate title via post
-                    item = {"id": str(p.get("id")), "title": p.get("title") or f"Anime {p.get('id')}", "year": p.get("premiered") or p.get("age") or "", "rating": p.get("score") or "", "type": 2, "poster": p.get("poster"), "_anime": True}
-                    a_list.append(TitleItemWidget(item))
-                # background hydration: replace placeholder titles with real titles from /anime/post/{id}
-                await self._hydrate_anime_titles(posts[:25], a_list)
-            except Exception:
-                pass
-
-    async def _hydrate_anime_titles(self, posts, list_view) -> None:
-        """Fetch full titles for anime posts that only have id/poster (upstream limitation)."""
-        import asyncio as _aio
-        # limit concurrency to avoid rate limits
-        sem = _aio.Semaphore(5)
-        # collect widgets in order
-        widgets = list(list_view.children) if hasattr(list_view, 'children') else []
-        # but ListView stores items via query; use index mapping
-        async def _fetch_one(idx, p):
-            async with sem:
-                pid = str(p.get("id"))
-                # skip if already has real title
-                if p.get("title"):
-                    return
-                try:
-                    # use gateway if available, else direct
-                    data = await _aio.to_thread(api_soft, f"/anime/post/{pid}")
-                    info = (data or {}).get("data") or {}
-                    title = info.get("title")
-                    if title:
-                        # update backing data
-                        try:
-                            w = list_view.children[idx] if idx < len(list_view.children) else None
-                            if w and hasattr(w, 'title_data'):
-                                w.title_data["title"] = title
-                                w.title_data["year"] = info.get("premiered") or info.get("age") or w.title_data.get("year")
-                                w.title_data["rating"] = info.get("score") or w.title_data.get("rating")
-                                # update visible label: TitleItemWidget contains Horizontal > Label.item-title
-                                try:
-                                    label = w.query_one(".item-title", Label)
-                                    label.update(f"{title} ({w.title_data.get('year') or ''})".strip())
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        if not widgets:
-            # fallback: ListView may use internal list, hydrate sequentially
-            for i, p in enumerate(posts):
-                await _fetch_one(i, p)
-        else:
-            await _aio.gather(*[_fetch_one(i, p) for i, p in enumerate(posts)])
-
-    def action_load_anime(self) -> None:
-        self.query_one("#tabs", TabbedContent).active = "tab-anime"
-        self.fetch_anime_latest()
-
     def load_history_tab(self) -> None:
         history = load_history()
         h_list = self.query_one("#history-list", ListView)
@@ -676,10 +589,7 @@ class MBXApp(App):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if isinstance(event.item, TitleItemWidget):
             self.selected_item = event.item.title_data
-            if self.selected_item.get("_anime"):
-                self.fetch_anime_details(str(self.selected_item.get("id")))
-            else:
-                self.fetch_details(str(self.selected_item.get("id")))
+            self.fetch_details(str(self.selected_item.get("id")))
 
     @work(exclusive=True)
     async def fetch_details(self, subject_id: str) -> None:
@@ -807,23 +717,6 @@ class MBXApp(App):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         opt_id = str(event.option_id or "")
-        # anime handlers first
-        if opt_id.startswith("anime_ep_"):
-            ep_id = opt_id.replace("anime_ep_","")
-            self._load_anime_episode(ep_id)
-            return
-        if opt_id.startswith("anime_srv_"):
-            srv_id = opt_id.replace("anime_srv_","")
-            self._resolve_anime_stream(srv_id)
-            return
-        if opt_id.startswith("anime_hls_"):
-            idx = int(opt_id.split("_")[-1])
-            alts = (self.resolved_stream or {}).get("alternates") or []
-            if 0 <= idx < len(alts):
-                self.resolved_stream["url"] = alts[idx]
-                self.query_one("#stream-info-box", Static).update(f"● Selected HLS variant {idx+1}: {alts[idx][:60]}…")
-                self.notify(f"Selected HLS variant {idx+1}", severity="information")
-            return
         if opt_id.startswith("res_"):
             idx = int(opt_id.split("_")[1])
             if idx < len(self.all_resources):
@@ -916,102 +809,6 @@ class MBXApp(App):
     def action_load_history(self) -> None:
         self.query_one("#tabs", TabbedContent).active = "tab-history"
         self.load_history_tab()
-
-    @work(exclusive=True)
-    async def fetch_anime_details(self, post_id: str) -> None:
-        title_box = self.query_one("#detail-title", Static)
-        badges_box = self.query_one("#detail-badges", Horizontal)
-        synopsis_box = self.query_one("#detail-synopsis", Static)
-        stream_box = self.query_one("#stream-info-box", Static)
-        ep_list = self.query_one("#episode-list", OptionList)
-        dubs_list = self.query_one("#dubs-list", OptionList)
-        quality_list = self.query_one("#quality-list", OptionList)
-        title_box.update("Fetching anime details…")
-        badges_box.remove_children()
-        synopsis_box.update("")
-        stream_box.update("Resolving episodes via Kyoto…")
-        ep_list.clear_options(); dubs_list.clear_options(); quality_list.clear_options()
-        # fetch post details + episodes concurrently
-        post_resp = await asyncio.to_thread(api_soft, f"/anime/post/{post_id}")
-        info = (post_resp or {}).get("data") or {}
-        title = info.get("title") or self.selected_item.get("title") or f"Anime {post_id}"
-        score = info.get("score") or ""
-        ptype = info.get("type") or "Anime"
-        overview = info.get("overview") or "No synopsis."
-        title_box.update(f"{title}")
-        await badges_box.mount(Static(f"🌸 {ptype}", classes="badge"))
-        if score: await badges_box.mount(Static(f"★ {score}", classes="badge badge-rating"))
-        if info.get("age"): await badges_box.mount(Static(f"🔞 {info.get('age')}", classes="badge"))
-        if info.get("status"): await badges_box.mount(Static(f"📺 {info.get('status')}", classes="badge"))
-        synopsis_box.update(overview)
-        # episodes via Kyoto (now via curl_cffi chrome impersonate to bypass CF — nightfall/anilab/kyoto.py:15)
-        eps_resp = await asyncio.to_thread(api_soft, f"/anime/post/{post_id}/episodes")
-        # api_soft returns None on auth error; check gateway error payload
-        err = (eps_resp or {}).get("error") or eps_resp
-        eps = (eps_resp or {}).get("episodes") or []
-        if not eps:
-            # Check if response was CF block or truly empty; show actionable hint
-            detail = (err.get("message") if isinstance(err, dict) else "") or ""
-            hint = ""
-            if "403" in str(detail) or "cf" in str(detail).lower():
-                hint = " (Cloudflare challenge — gateway now uses curl_cffi chrome, retry or check config.yaml kyoto.app-version, or use http://127.0.0.1:8399/anime/ui#post/{})".format(post_id)
-            stream_box.update(f"No episodes found for this title{hint}. Try related seasons or web UI.")
-            return
-        self._anime_eps = eps
-        self._anime_pid = post_id
-        ep_list.clear_options()
-        for e in eps:
-            ep_list.add_option(Option(f"Ep {e.get('num') or e.get('id')}: {e.get('name') or ''}", id=f"anime_ep_{e.get('id')}"))
-        self.current_se = 1; self.current_ep = 1
-        # auto load first episode servers
-        await self._load_anime_episode_inner(eps[0]["id"])
-        stream_box.update(f"● Anime ready — {len(eps)} episodes, pick one to view servers")
-
-    async def _load_anime_episode_inner(self, ep_id: str) -> None:
-        dubs_list = self.query_one("#dubs-list", OptionList)
-        quality_list = self.query_one("#quality-list", OptionList)
-        stream_box = self.query_one("#stream-info-box", Static)
-        dubs_list.clear_options(); quality_list.clear_options()
-        stream_box.update(f"Loading servers for episode {ep_id}…")
-        srvs_resp = await asyncio.to_thread(api_soft, f"/anime/post/{self._anime_pid}/servers/{ep_id}")
-        srvs = (srvs_resp or {}).get("servers") or []
-        self._anime_srvs = srvs
-        self._anime_cur_ep = ep_id
-        if not srvs:
-            stream_box.update("No servers for this episode.")
-            return
-        for idx, s in enumerate(srvs):
-            lang = s.get("lang","sub")
-            badge = "🔊 SUB" if lang=="sub" else "🎙 DUB"
-            dubs_list.add_option(Option(f"{badge} — {s.get('name')}", id=f"anime_srv_{s.get('id')}"))
-        stream_box.update(f"● Servers loaded: {len(srvs)} (pick SUB/DUB to resolve .m3u8)")
-        await self._resolve_anime_stream_inner(srvs[0]["id"])
-
-    async def _resolve_anime_stream_inner(self, srv_id: str) -> None:
-        stream_box = self.query_one("#stream-info-box", Static)
-        quality_list = self.query_one("#quality-list", OptionList)
-        stream_box.update(f"Resolving .m3u8 for server {srv_id}…")
-        st = await asyncio.to_thread(api_soft, f"/anime/post/{self._anime_pid}/stream/{srv_id}")
-        if not st or not st.get("ok"):
-            stream_box.update(f"Stream resolve failed: {st}")
-            return
-        url = st.get("url")
-        alts = st.get("alternates") or [url]
-        self.resolved_stream = {"url": url, "alternates": alts, "kind": "hls", "max_resolution":"1080p"}
-        self.resolved_resource = None
-        quality_list.clear_options()
-        for i, u in enumerate(alts):
-            label = "master.m3u8 (auto)" if "master" in u else f"variant {i+1}"
-            quality_list.add_option(Option(f"🌙 HLS — {label}", id=f"anime_hls_{i}"))
-        stream_box.update(f"● HLS ready: {url[:60]}…  ({len(alts)} variant(s))")
-
-    @work(exclusive=True)
-    async def _load_anime_episode(self, ep_id: str) -> None:
-        await self._load_anime_episode_inner(ep_id)
-
-    @work(exclusive=True)
-    async def _resolve_anime_stream(self, srv_id: str) -> None:
-        await self._resolve_anime_stream_inner(srv_id)
 
 
 # ---------------------------------------------------------------- Flow Helpers

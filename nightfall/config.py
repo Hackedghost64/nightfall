@@ -45,7 +45,7 @@ def _app_root() -> Path:
     return _bootstrap_app_root(Path(base) / "nightfall")
 
 
-DEFAULT_CONFIG_TEXT = """# 🌙 NIGHTFALL — Centralized config (edit THIS file when upstream rotates)
+DEFAULT_CONFIG_TEXT = """# 🌙 NIGHTFALL — MovieBox Gateway (anime separated to ../anime-app)
 moviebox:
   api_hosts:
     - api6.aoneroom.com
@@ -53,27 +53,6 @@ moviebox:
   hmac_secret: ""
   signing_version: "2"
   user_agent: "MovieBox/3.0.14"
-
-anilab:
-  base_url: "https://anilab2.amdapi.click/api"
-  headers:
-    Accept: "application/json"
-    Content-Type: "application/json"
-    os-version: "35"
-    app-id: "com.xo.anilab"
-    app-version: "105"
-    os-id: ""
-    User-Agent: "okhttp/4.12.0"
-
-kyoto:
-  base_url: "https://app.kyotoplayer.com/api/v4"
-  headers:
-    Accept: "application/json"
-    Content-Type: "application/json"
-    os-version: "35"
-    app-id: "com.kyotoplayer"
-    app-version: "126"
-    User-Agent: "okhttp/4.12.0"
 
 server:
   host: "0.0.0.0"
@@ -103,8 +82,6 @@ cache_ttl:
   metadata: 3600
   search: 600
   stream: 120
-  anime_catalog: 3600
-  anime_stream: 900
 
 rate_limit_per_minute: 60
 upstream_timeout_seconds: 15
@@ -129,29 +106,6 @@ DEFAULTS: Dict[str, Any] = {
         "signing_version": "2",
         "user_agent": "MovieBox/3.0.14",
     },
-    "anilab": {
-        "base_url": "https://anilab2.amdapi.click/api",
-        "headers": {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "os-version": "35",
-            "app-id": "com.xo.anilab",
-            "app-version": "105",
-            "os-id": "",
-            "User-Agent": "okhttp/4.12.0",
-        },
-    },
-    "kyoto": {
-        "base_url": "https://app.kyotoplayer.com/api/v4",
-        "headers": {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "os-version": "35",
-            "app-id": "com.kyotoplayer",
-            "app-version": "126",
-            "User-Agent": "okhttp/4.12.0",
-        },
-    },
     "server": {"host": "0.0.0.0", "port": 8399, "api_key_file": "data/api.key"},
     "player": {"preferred": "vlc", "fallback_order": ["vlc", "mpv", "ffplay"]},
     "downloads": {"directory": "downloads", "filename_template": "{title}/{season}x{episode}_{quality}.mp4"},
@@ -165,7 +119,7 @@ DEFAULTS: Dict[str, Any] = {
         "backups_dir": "protocol/backups",
         "downloads_dir": "downloads",
     },
-    "cache_ttl": {"metadata": 3600, "search": 600, "stream": 120, "anime_catalog": 3600, "anime_stream": 900},
+    "cache_ttl": {"metadata": 3600, "search": 600, "stream": 120},
     "rate_limit_per_minute": 60,
     "upstream_timeout_seconds": 15,
     "log_raw_traffic": True,
