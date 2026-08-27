@@ -1,10 +1,4 @@
 # 🌙 Nightfall — Private Cinema Gateway (MovieBox)
-
-> **MovieBox-only gateway on `:8399`.** Anime (Anilab2/Kyoto) separated to `../anime-app` after TUI `DuplicateID` crash.  
-> Fast, no lag, downloads default to `nightfall/downloads/`.  
-> Repair when upstream rotates secrets: edit `config.yaml` — nothing else.  
-> `movie-app/wrapper` stays untouched as the knowledge base.
-
 ---
 
 ## Quick Start
