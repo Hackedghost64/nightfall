@@ -16,11 +16,15 @@ cd nightfall
 ./run.sh tui        # MovieBox TUI (search, Trending, History)
 ```
 
-Or foreground:
+Or foreground (always shows `🔑 API key` + curl + `Serve Setup Guide`):
 
 ```bash
-./run.sh serve              # binds 0.0.0.0:8399, Swagger at /docs
-./run.sh serve --port 8399 --host 0.0.0.0
+./run.sh serve              # compact 8-step guide + API key + start 0.0.0.0:8399
+./run.sh serve --guide      # full guide only (no start)
+./run.sh serve --quick      # no guide, direct start
+./run.sh serve --port 8000  # alt port if 8399 in use (lsof -i :8399 → ./run.sh down)
+# Serve prints: Host 0.0.0.0:8399 + 🔑 API key  nf_... (X-API-Key: ...) + curl -H "X-API-Key: $KEY" /health
+# GET / → 401 is normal (needs X-API-Key); use /health or /docs
 ```
 
 ---
@@ -245,7 +249,11 @@ TUI crashed on `Solo Leveling` (post `1000004883`) due to `DuplicateID: anime_sr
 
 *VLC not opening?* `vlc <m3u8_url>` works without cookies. MovieBox streams needing cookies use `mpv --http-header-fields=Cookie:` via `./run.sh play`.
 
-*Port busy?* `lsof -i :8399` then `./run.sh down`.
+*Port busy?* `lsof -i :8399` then `./run.sh down`. `serve` now shows compact guide + `🔑 API key` before `Uvicorn running` (`cli.py:35` `_print_serve_guide`); use `--quick` to hide, `--guide` for full 9-step guide without start.
+
+*Serve shows `GET / 401 Unauthorized` / `GET /favicon.ico 401`?* Normal — auth guard `security.py:68` public only `/health,/docs,/openapi.json`. Browser hits `/` → 401; use `http://127.0.0.1:8399/health` (public) or `http://127.0.0.1:8399/docs` with `X-API-Key`. Serve guide step 9 documents this.
+
+*API key not shown?* `serve` always prints `🔑 API key  nf_...` from `data/cli.key` (`cli.py:41`) + `curl -H "X-API-Key: $KEY" /health`. If `none yet`, run `./run.sh key create phone` or `./run.sh setup`.
 
 *Anime previously showed “Anime 12345” or “No episodes found”?* See `../anime-app/README.md` — upstream `search/latest` returns only `id/poster`, hydrates via `/anime/post/{id}`; now fixed with `curl_cffi`.
 
