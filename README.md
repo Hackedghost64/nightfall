@@ -40,6 +40,7 @@ Or foreground:
 | `./run.sh secure on\|off\|auto` | Toggle API-key enforcement |
 | `./run.sh key create/list/revoke` | Manage `X-API-Key` clients |
 | `./run.sh doctor [--live]` | Layered diagnostics (signing, DNS/TLS, probe) |
+| `./run.sh guide` | **Whole project guide** — architecture, 8 use cases, setup (`guide.py:1`), `--json`/`--use-cases` |
 | `./run.sh heal` | Scan `watch/` for new APK → extract → diff → verify → commit |
 | `./run.sh extract path/to.apk` | Dump secrets/app facts from an APK |
 
@@ -95,6 +96,77 @@ No anime `anilab`/`kyoto` keys — those live in `../anime-app`.
 
 ---
 
+## Distributed Caching
+
+`nightfall/cache.py:4` (`HybridCache` + `CacheBucket`) supports `config.yaml:cache.backend: memory|file|redis`, `distributed: true|false` (`nightfall/config.py:48`, `nightfall/main.py:50`).
+
+| Backend | How | Use when |
+|---|---|---|
+| `memory` (default) | per-process `TTLCache` (`cache.py:8`), `cache_ttl: metadata 3600/search 600/stream 120` | single instance, dev |
+| `file` | `data/cache/<kind>/<hash>.json` `{exp,val}` with file lock (`FileDistributedCache`, `HybridCache`, `nightfall/cache.py:55`), survives restarts, shared via filesystem | two `run.sh serve` on same host, NFS share |
+| `redis` | `redis://127.0.0.1:6379/0`, `RedisDistributedCache` `ex`+`json` prefix `nightfall:<kind>:` (`nightfall/cache.py:95`) | LAN multi-host, horizontal scale |
+
+Hybrid reads `mem → file/redis → upstream`, writes both. `GET /cache/stats` / `POST /cache/clear` (auth), `GET /health` includes `cache` hits. Enable:
+
+```yaml
+cache:
+  backend: file      # or redis
+  distributed: true
+  redis_url: "redis://127.0.0.1:6379/0"
+  file_dir: "data/cache"
+```
+
+```bash
+./run.sh up
+curl -H "X-API-Key: $KEY" http://127.0.0.1:8399/cache/stats | jq
+curl -X POST -H "X-API-Key: $KEY" http://127.0.0.1:8399/cache/clear
+```
+
+---
+
+## Dynamic Header & Fingerprint Spoofing
+
+`nightfall/fingerprint.py:1` (`FingerprintManager`, `nightfall/upstream/identity.py:74`) rotates device fingerprints to evade upstream throttling.
+
+```yaml
+fingerprint:
+  enabled: true
+  rotation: per_request   # per_request | per_session | timed
+  rotation_interval_seconds: 300
+  spoof_headers: true
+  profiles:
+    - {brand: "Google", model: "Pixel 8 Pro", os_version: "14", lang: "en", timezone: "America/New_York"}
+    - {brand: "Samsung", model: "SM-S928B", os_version: "14", lang: "en", timezone: "America/New_York"}
+    # Xiaomi, OnePlus, Pixel 7 ...
+```
+
+`DeviceIdentity.base_headers()` (`upstream/identity.py:97`) injects `brand/model/os_version/lang/timezone` into `user-agent` (`MovieBox/... (Android 14; Pixel 8 Pro)`) and `X-Client-Info` JSON, plus spoofed `Sec-Ch-Ua`, `Sec-Ch-Ua-Mobile`, `Accept-Language`, `DNT` (`fingerprint.py:70` `spoofed_headers()`). Rotation per `per_request` = random each `base_headers()` call, `timed` = every `interval`, `per_session` = once.
+
+```bash
+curl http://127.0.0.1:8399/health | jq .fingerprint
+curl -H "X-API-Key: $KEY" http://127.0.0.1:8399/fingerprint/stats | jq
+curl -X POST -H "X-API-Key: $KEY" http://127.0.0.1:8399/fingerprint/rotate
+cat logs/upstream.log | jq .request_headers  # verify X-Client-Info brand rotation
+```
+
+Disable: `fingerprint.enabled: false`.
+
+---
+
+## Guide — `./run.sh guide`
+
+Whole-project guide (not just ` --help` commands), `nightfall/guide.py:1`:
+
+```bash
+./run.sh guide              # architecture, install, 8 use cases, config, API, troubleshooting
+./run.sh guide --use-cases  # only use cases (couch TUI, quick CLI, home API, download manager, self-heal, headless, distributed cache, fingerprint)
+./run.sh guide --json       # JSON for scripts
+```
+
+Covers: What is Nightfall, Architecture (`run.sh` → `config.yaml` → `main.py` → `upstream/` → `cache.py`/`fingerprint.py`), Install/Quick Health, Use Cases (see `guide.py:15`), Config, API Summary (`GET /health /cache/stats /fingerprint/stats /search /titles/{id}/stream`), Distributed Caching How, Fingerprint How.
+
+---
+
 ## Downloads
 
 Default target: `nightfall/downloads/<title>.S01E01.mp4` (gitignored).  
@@ -121,22 +193,25 @@ ip route get 1.1.1.1 | awk '{print $7}'
 
 ```
 nightfall/
-├── run.sh                  ./run.sh [query|tui|serve|up|down|status]
+├── run.sh                  ./run.sh [guide|tui|serve|up|down|query|...]
 ├── nightfall/
-│   ├── cli.py              MovieBox CLI (query, play/dl, keys, doctor/heal)
+│   ├── cli.py              MovieBox CLI (query, play/dl, keys, doctor/heal, guide)
+│   ├── guide.py            Whole-project guide (8 use cases, not just --help)
 │   ├── tui.py              MovieBox TUI (no anime DuplicateID)
-│   ├── config.yaml         MovieBox-only — one file
+│   ├── config.yaml         MovieBox-only — one file (+ cache/fingerprint)
 │   ├── config.py           loader (deep-merge + env overrides)
-│   ├── main.py             MovieBox FastAPI (0.0.0.0:8399)
+│   ├── main.py             MovieBox FastAPI (0.0.0.0:8399, /cache/stats, /fingerprint/stats)
+│   ├── cache.py            HybridCache (memory/file/redis, TTL, distributed)
+│   ├── fingerprint.py      FingerprintManager (dynamic header & device spoofing)
 │   ├── security.py         API key + rate limit (public: /health /docs)
 │   ├── daemon.py           up/down/status (nightfall.pid)
 │   ├── downloader.py       async streaming (httpx + Range + semaphore)
 │   ├── banner.py           🌙 NIGHTFALL banner
-│   ├── upstream/           MovieBox signed client (HMAC-MD5, failover, GW.4410 skew)
+│   ├── upstream/           MovieBox signed client (HMAC-MD5, failover, GW.4410 skew, fingerprint)
 │   └── selfheal/           extractor / doctor / healer (watch/ APK)
 ├── downloads/              gitignored
 ├── logs/                   rotating logs
-├── data/                   device.json + api_keys.json (gitignored)
+├── data/                   device.json + api_keys.json + cache/ (gitignored)
 ├── protocol/               protocol.yaml
 └── tests/                  pytest
 
