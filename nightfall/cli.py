@@ -34,24 +34,55 @@ def _set_config_line(path, key_pattern: str, new_line: str) -> bool:
 
 def _print_serve_guide(host: str, port: int, compact: bool = False) -> None:
     """Serve setup guide — like ./run.sh guide but focused on `serve`."""
-    from .banner import c, dim
+    from .banner import c, dim, green, yellow
     print(c("╭──────────────────────────────────────────────────╮", "35"))
     print(c("│  🌙  NIGHTFALL · Serve Setup Guide               │", "35"))
     print(c("╰──────────────────────────────────────────────────╯", "35"))
     print(f"  Host {host}:{port}  (config.yaml: server.host/port, env: NIGHTFALL_SERVER__PORT)")
-    print()
+    # Always show API key (user requested)
+    try:
+        from pathlib import Path
+        from .config import settings as _s
+        cfg = _s()
+        # cli.key is the auto local-cli key used by TUI/CLI
+        cli_key = Path(cfg.device_file.parent) / "cli.key"
+        api_keys = Path(cfg.device_file.parent) / "api_keys.json"
+        shown = False
+        if cli_key.exists():
+            k = cli_key.read_text().strip()
+            if k:
+                print(f"  {green('🔑 API key')}  {k}  {dim('(header: X-API-Key: '+k[:10]+'…)')}")
+                print(f"     curl -H \"X-API-Key: {k}\" http://127.0.0.1:{port}/health")
+                shown = True
+        if api_keys.exists() and not shown:
+            import json as _j
+            try:
+                lst = _j.loads(api_keys.read_text())
+                if lst:
+                    print(f"  {yellow('🔑 API keys')}: {len(lst)} in data/api_keys.json")
+                    for rec in lst[:3]:
+                        print(f"     - {rec.get('name')}  prefix={rec.get('prefix')}")
+                    shown = True
+            except: pass
+        if not shown:
+            print(f"  {yellow('🔑 API key')}  none yet — run: ./run.sh key create phone")
+            print(f"     then: curl -H \"X-API-Key: $KEY\" http://127.0.0.1:{port}/search?q=dune")
+        print()
+    except Exception:
+        pass
     steps = [
         ("1. Port free?", f"lsof -i :{port}  # if 8399 in use: ./run.sh down  or  ./run.sh serve --port {port+1}"),
         ("2. Firewall (LAN)", f"sudo ufw allow {port}/tcp  # else phone can't reach"),
         ("3. LAN IP", f"ip route get 1.1.1.1 | awk '{{print $7}}'  # → http://<LAN_IP>:{port}/docs"),
         ("4. API key", "./run.sh key create phone  # header X-API-Key: $KEY  (auto if ./run.sh setup)"),
         ("5. Start", f"./run.sh serve  # this — or  ./run.sh up  (daemon)"),
-        ("6. Verify", f"curl http://127.0.0.1:{port}/health | jq  # {{ok:true, cache, fingerprint}}"),
+        ("6. Verify", f"curl -H \"X-API-Key: $KEY\" http://127.0.0.1:{port}/health | jq  # {{ok:true, cache, fingerprint}}"),
         ("7. Docs", f"http://127.0.0.1:{port}/docs  (Swagger, try /search, /titles/{{id}}/stream)"),
         ("8. If 98 (in use)", f"./run.sh status; ./run.sh down; lsof -i :{port}"),
+        ("9. Root 401?", "GET / → 401 is normal (needs X-API-Key). Use /health or /docs"),
     ]
     for title, cmd in steps:
-        if compact and title.startswith(("7.", "8.")):
+        if compact and title.startswith(("7.", "8.", "9.")):
             continue
         print(f"  {c(title, '36')}  {dim(cmd)}" if not compact else f"  {title} {cmd}")
     if not compact:
