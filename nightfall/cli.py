@@ -369,6 +369,20 @@ def main() -> int:
         return 0
 
     if args.cmd == "tui":
+        # The TUI talks to the local gateway over HTTP.  Start the daemon
+        # automatically so `./run.sh tui` is self-contained, just like the
+        # no-argument auto mode above.
+        from . import daemon
+        st = daemon.status()
+        if not st["running"] or not st["healthy"]:
+            info("starting local gateway…")
+            res = daemon.up()
+            if res["status"].startswith("started-unverified"):
+                fail("gateway failed to become ready - check logs/server.log")
+                return 1
+        else:
+            from .config import settings as _settings
+            info(f"local gateway ready on 127.0.0.1:{int(_settings().get('server.port', 8399))}")
         from .tui import main as tui_main
         return tui_main()
 
